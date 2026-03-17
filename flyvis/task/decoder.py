@@ -160,17 +160,17 @@ class Conv2dHexSpace(Conv2dConstWeight):
             u, v = get_hex_coords(kernel_size // 2)
             u -= u.min()
             v -= v.min()
-            mask = np.zeros(tuple(self.weight.shape))
+            mask = np.zeros(tuple(self.weight.shape), dtype=np.float32)
             mask[:, :, u, v] = 1
-            self.mask = torch.tensor(mask, device="cpu")
-            self.weight.data.mul_(self.mask.to(device))
+            self.register_buffer("mask", torch.tensor(mask))
+            self.weight.data.mul_(self.mask)
             self._filter_to_hex = True
         else:
             self._filter_to_hex = False
 
     def filter_to_hex(self):
         """Apply hexagonal filter to weights."""
-        self.weight.data.mul_(self.mask.to(device))
+        self.weight.data.mul_(self.mask)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
