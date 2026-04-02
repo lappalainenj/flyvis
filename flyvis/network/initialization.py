@@ -33,6 +33,7 @@ __all__ = [
     "SynapseSign",
     "SynapseCount",
     "SynapseCountScaling",
+    "GlobalFanInNormal",
     "InitialDistribution",
     "Value",
     "Normal",
@@ -515,6 +516,61 @@ class SynapseCountScaling(Parameter):
             )
         )
         self.symmetry_masks = symmetry_masks(param_config.get("symmetric", []), self.keys)
+
+
+class GlobalFanInNormal(Parameter):
+    """Free edge magnitude initialized from a normal with global fan-in scaling.
+
+    Each unique (source_type, target_type, du, dv) edge gets an independent
+    weight sampled from N(0, sqrt(2 / fan_in)), where fan_in is the total
+    number of unique spatial offsets in the connectome (not the per-neuron
+    fan-in). This produces a conservative initialization that prevents
+    divergence in recurrent dynamics.
+    """
+
+    @deepcopy_config
+    def __init__(
+        self, param_config: Namespace, connectome: ConnectomeFromAvgFilters
+    ) -> None:
+        edges_dir = connectome.edges
+
+        edges = pd.DataFrame({
+            k: byte_to_str(edges_dir[k][:])
+            for k in [*param_config.groupby, "n_syn"]
+        })
+        grouped_edges = edges.groupby(
+            param_config.groupby, as_index=False, sort=False
+        ).mean()
+
+        param_config.source_type = grouped_edges.source_type.values
+        param_config.target_type = grouped_edges.target_type.values
+        param_config.du = grouped_edges.du.values
+        param_config.dv = grouped_edges.dv.values
+
+        fan_in = len(grouped_edges)
+        spread_scale = param_config.get("spread_scale", 1)
+        param_config["mean"] = np.zeros(len(grouped_edges), dtype="f")
+        param_config["std"] = np.full(
+            len(grouped_edges),
+            spread_scale * np.sqrt(2 / fan_in),
+            dtype="f",
+        )
+
+        self.indices = get_scatter_indices(edges, grouped_edges, param_config.groupby)
+        self.parameter = forward_subclass(
+            InitialDistribution, param_config, subclass_key="initial_dist"
+        )
+        self.keys = list(
+            zip(
+                param_config.source_type.tolist(),
+                param_config.target_type.tolist(),
+                param_config.du.tolist(),
+                param_config.dv.tolist(),
+            )
+        )
+        self.symmetry_masks = symmetry_masks(
+            param_config.get("symmetric", []), self.keys
+        )
 
 
 def get_scatter_indices(
