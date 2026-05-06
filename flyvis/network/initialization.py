@@ -37,6 +37,7 @@ __all__ = [
     "InitialDistribution",
     "Value",
     "Normal",
+    "NonNegativeNormal",
     "Lognormal",
 ]
 
@@ -177,6 +178,19 @@ class Normal(InitialDistribution):
             raise ValueError("Mode must be either mean or sample.")
         _values = self.clamp(_values, clamp)
         self.raw_values = nn.Parameter(_values, requires_grad=requires_grad)
+
+
+class NonNegativeNormal(Normal):
+    """Normal distribution whose semantic values are constrained to be non-negative.
+
+    Equivalent to taking ``abs(raw_values)``. Used to port dvs-sim
+    ``NonNegativeNormal`` parameters where the trainable raw value can be negative
+    but the magnitude exposed to the dynamics is its absolute value.
+    """
+
+    @property
+    def semantic_values(self):
+        return torch.sign(self.raw_values) * self.raw_values
 
 
 class Lognormal(Normal):
@@ -516,6 +530,57 @@ class SynapseCountScaling(Parameter):
             )
         )
         self.symmetry_masks = symmetry_masks(param_config.get("symmetric", []), self.keys)
+
+
+class DalesLawSign(Parameter):
+    """Trainable synapse sign per pre-synaptic cell type (Dale's law).
+
+    Unlike `SynapseSign` which fixes the sign per (source_type, target_type)
+    pair from the connectome, this parameter assigns a single trainable scalar
+    per pre-synaptic cell type (group-by ``["source_type"]``), enforcing Dale's
+    law (a neuron has the same sign on all its post-synaptic targets) while
+    learning the sign during training.
+
+    Default initialization samples ``+1``/``-1`` from the standard normal sign,
+    matching dvs-sim's ``SimpleDaleSign``. The learned values are loaded from
+    a state dict at recovery time, so the random init only affects fresh
+    training runs.
+    """
+
+    @deepcopy_config
+    def __init__(
+        self, param_config: Namespace, connectome: ConnectomeFromAvgFilters
+    ) -> None:
+        edges_dir = connectome.edges
+
+        edges = pd.DataFrame({
+            k: byte_to_str(edges_dir[k][:])
+            for k in [*param_config.groupby]
+        })
+        grouped_edges = edges.groupby(
+            param_config.groupby, as_index=False, sort=False
+        ).first()
+
+        param_config.source_type = grouped_edges.source_type.values
+
+        # ±1 init per source_type, matching dvs-sim's SimpleDaleSign.
+        if "value" not in param_config:
+            seed = param_config.get("seed", None)
+            rng = np.random.default_rng(seed)
+            param_config.value = np.sign(
+                rng.normal(0.0, 1.0, size=len(grouped_edges))
+            ).astype("f")
+        else:
+            param_config.value = np.asarray(param_config.value, dtype="f")
+
+        self.indices = get_scatter_indices(edges, grouped_edges, param_config.groupby)
+        self.parameter = forward_subclass(
+            InitialDistribution, param_config, subclass_key="initial_dist"
+        )
+        self.keys = [(s,) for s in param_config.source_type.tolist()]
+        self.symmetry_masks = symmetry_masks(
+            param_config.get("symmetric", []), self.keys
+        )
 
 
 class GlobalFanInNormal(Parameter):
