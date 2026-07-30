@@ -9,7 +9,7 @@ types.
 import functools
 import logging
 from copy import deepcopy
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,7 @@ __all__ = [
     "SynapseCount",
     "SynapseCountScaling",
     "GlobalFanInNormal",
+    "EdgeWiseNormal",
     "InitialDistribution",
     "Value",
     "Normal",
@@ -249,7 +250,7 @@ class Parameter:
     Attributes:
         parameter (InitialDistribution): InitialDistribution object.
         indices (torch.Tensor): Indices for parameter sharing.
-        keys (List[Any]): Keys to access individual parameter values associated with
+        keys (Sequence[Any]): Keys to access individual parameter values associated with
             certain identifiers.
         symmetry_masks (List[torch.Tensor]): Symmetry masks that can be configured
             optionally to apply further symmetry constraints to the parameter values.
@@ -293,7 +294,9 @@ class Parameter:
     parameter: InitialDistribution
     indices: torch.Tensor
     symmetry_masks: List[torch.Tensor]
-    keys: List[Any]
+    # any Sequence: per-edge parameters use a range to avoid materializing
+    # one key object per edge
+    keys: Sequence[Any]
 
     @deepcopy_config
     def __init__(self, param_config: Namespace, connectome: ConnectomeFromAvgFilters):
@@ -636,6 +639,47 @@ class GlobalFanInNormal(Parameter):
         self.symmetry_masks = symmetry_masks(
             param_config.get("symmetric", []), self.keys
         )
+
+
+class EdgeWiseNormal(Parameter):
+    """Free per-edge magnitude, untied across columns.
+
+    Unlike GlobalFanInNormal, which shares one weight across all edges of a
+    (source_type, target_type, du, dv) filter tap, this gives every edge in the
+    computational graph its own weight, i.e. len(connectome.edges) parameters.
+    Weights are sampled from N(0, sqrt(2 / fan_in)) with the same global fan-in
+    scaling as GlobalFanInNormal, so that untying does not change the
+    initialization statistics.
+
+    The `groupby` columns are only used to determine fan_in, not to share
+    parameters. Since each edge is its own group, `keys` are edge indices.
+    """
+
+    @deepcopy_config
+    def __init__(
+        self, param_config: Namespace, connectome: ConnectomeFromAvgFilters
+    ) -> None:
+        edges_dir = connectome.edges
+        n_edges = len(edges_dir.source_index[:])
+
+        edges = pd.DataFrame({
+            k: byte_to_str(edges_dir[k][:]) for k in param_config.groupby
+        })
+        fan_in = len(edges.groupby(param_config.groupby, sort=False))
+
+        spread_scale = param_config.get("spread_scale", 1)
+        param_config["mean"] = np.zeros(n_edges, dtype="f")
+        param_config["std"] = np.full(
+            n_edges, spread_scale * np.sqrt(2 / fan_in), dtype="f"
+        )
+
+        self.indices = torch.arange(n_edges)
+        self.parameter = forward_subclass(
+            InitialDistribution, param_config, subclass_key="initial_dist"
+        )
+        # range instead of list to keep 7.5M keys cheap; supports `in` and .index()
+        self.keys = range(n_edges)
+        self.symmetry_masks = []
 
 
 def get_scatter_indices(

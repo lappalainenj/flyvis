@@ -19,7 +19,7 @@ from flyvis.analysis.moving_bar_responses import (
     dsi_violins_on_and_off,
 )
 from flyvis.analysis.visualization import plots
-from flyvis.connectome import get_avgfilt_connectome
+from flyvis.connectome import get_connectome_view
 from flyvis.utils.chkpt_utils import (
     best_checkpoint_default_fn,
     recover_network,
@@ -60,7 +60,7 @@ class EnsembleView(Ensemble):
         path: Union[str, Path, Iterable, EnsembleDir, Ensemble],
         network_class: nn.Module = Network,
         root_dir: Path = flyvis.results_dir,
-        connectome_getter: Callable = get_avgfilt_connectome,
+        connectome_getter: Callable = get_connectome_view,
         checkpoint_mapper: Callable = resolve_checkpoints,
         best_checkpoint_fn: Callable = best_checkpoint_default_fn,
         best_checkpoint_fn_kwargs: dict = {

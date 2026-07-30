@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import numpy as np
 import pytest
 import torch
@@ -14,6 +16,9 @@ groupby = {
     "SynapseSign": ["source_type", "target_type"],
     "SynapseCount": ["source_type", "target_type", "du", "dv"],
     "SynapseCountScaling": ["source_type", "target_type"],
+    "DalesLawSign": ["source_type"],
+    "GlobalFanInNormal": ["source_type", "target_type", "du", "dv"],
+    "EdgeWiseNormal": ["source_type", "target_type", "du", "dv"],
 }
 
 
@@ -124,6 +129,12 @@ def test_parameter(param_config, connectome):
     if param_config.type == "SynapseCount" and param_config.mode == "sample":
         pytest.skip("SynapseCount does currently not support sampling")
 
+    if (
+        param_config.type in ("GlobalFanInNormal", "EdgeWiseNormal")
+        and param_config.initial_dist != "Normal"
+    ):
+        pytest.skip(f"{param_config.type} derives mean and std, requiring Normal")
+
     param = forward_subclass(
         Parameter,
         config={
@@ -138,6 +149,7 @@ def test_parameter(param_config, connectome):
     )
     assert hasattr(param, "indices") and isinstance(param.indices, torch.Tensor)
     assert hasattr(param, "symmetry_masks") and isinstance(param.symmetry_masks, list)
-    assert hasattr(param, "keys") and isinstance(param.keys, list)
+    assert hasattr(param, "keys") and isinstance(param.keys, Sequence)
     assert param.parameter.raw_values.requires_grad == param_config.requires_grad
-    assert param[param.keys[0]]
+    # not truthiness: zero-mean initializations legitimately give a value of 0
+    assert param[param.keys[0]] is not None
