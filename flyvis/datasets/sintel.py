@@ -207,6 +207,8 @@ class MultiTaskSintel(MultiTaskDataset):
         _init_cache: If True, caches the dataset in memory.
         unittest: If True, only renders a single sequence.
         flip_axes: List of axes to flip over.
+        original_sampling: If True, resample input and targets in time the way the
+            training runs behind the published models did. See `Interpolate`.
 
     Attributes:
         dt (float): Sampling and integration time constant.
@@ -249,6 +251,7 @@ class MultiTaskSintel(MultiTaskDataset):
         unittest: bool = False,
         flip_axes: List[int] = [0, 1],
         sintel_path: Optional[Union[str, Path]] = None,
+        original_sampling: bool = False,
     ):
         def check_tasks(tasks):
             invalid_tasks = [x for x in tasks if x not in self.valid_tasks]
@@ -283,6 +286,7 @@ class MultiTaskSintel(MultiTaskDataset):
         self.random_temporal_crop = random_temporal_crop
         self.flip_axes = flip_axes
         self.fix_augmentation_params = False
+        self.original_sampling = original_sampling
 
         self.init_augmentation()
         self._augmentations_are_initialized = True
@@ -330,6 +334,7 @@ class MultiTaskSintel(MultiTaskDataset):
             gamma_std=gamma_std,
             center_crop_fraction=center_crop_fraction,
             flip_axes=flip_axes,
+            original_sampling=original_sampling,
         )
 
         self.arg_df = pd.DataFrame(
@@ -398,12 +403,16 @@ class MultiTaskSintel(MultiTaskDataset):
         self.noise = PixelNoise(self.gaussian_white_noise)
 
         self.piecewise_resample = Interpolate(
-            self.original_framerate, 1 / self.dt, mode="nearest-exact"
+            self.original_framerate,
+            1 / self.dt,
+            mode="nearest-exact",
+            original_sampling=self.original_sampling,
         )
         self.linear_interpolate = Interpolate(
             self.original_framerate,
             1 / self.dt,
             mode="linear",
+            original_sampling=self.original_sampling,
         )
         self.gamma_correct = GammaCorrection(1, self.gamma_std)
 
