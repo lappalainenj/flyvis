@@ -18,7 +18,6 @@ import torch.nn as nn
 from datamate import Namespace
 from torch import Tensor
 
-from flyvis import device
 from flyvis.connectome import ConnectomeFromAvgFilters
 from flyvis.utils.class_utils import forward_subclass
 from flyvis.utils.tensor_utils import atleast_column_vector, where_equal_rows

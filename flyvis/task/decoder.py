@@ -9,7 +9,6 @@ import torch.nn.functional as nnf
 from datamate import Namespace
 from torch import nn
 
-from flyvis import device
 from flyvis.connectome import ConnectomeFromAvgFilters
 from flyvis.utils.activity_utils import LayerActivity
 from flyvis.utils.hex_utils import get_hex_coords
@@ -162,7 +161,9 @@ class Conv2dHexSpace(Conv2dConstWeight):
             v -= v.min()
             mask = np.zeros(tuple(self.weight.shape), dtype=np.float32)
             mask[:, :, u, v] = 1
-            self.register_buffer("mask", torch.tensor(mask))
+            # non-persistent so the mask moves with .to() but stays out of
+            # state_dict, keeping existing checkpoints loadable
+            self.register_buffer("mask", torch.tensor(mask), persistent=False)
             self.weight.data.mul_(self.mask)
             self._filter_to_hex = True
         else:
@@ -301,7 +302,9 @@ class DecoderGAVP(ActivityDecoder):
 
         # Store hexals in square map.
         # (n_frames, #samples, #outputneurons, H, W)
-        x_map = torch.zeros([n_samples, n_frames, in_channels, self.H, self.W], device=x.device)
+        x_map = torch.zeros(
+            [n_samples, n_frames, in_channels, self.H, self.W], device=x.device
+        )
         x_map[:, :, :, self.u, self.v] = x
 
         # Concatenate actual batch dimension with the frame dimension.

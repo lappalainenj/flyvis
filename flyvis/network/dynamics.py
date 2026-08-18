@@ -275,7 +275,10 @@ class ConstrainedConnectivityAndSign(NetworkDynamics):
     ) -> None:
         vel.nodes.activity = (
             1
-            / torch.max(params.nodes.time_const, torch.tensor(dt).float())
+            / torch.max(
+                params.nodes.time_const,
+                params.nodes.time_const.new_tensor(dt),
+            )
             * (
                 -state.nodes.activity
                 + params.nodes.bias
@@ -325,7 +328,10 @@ class ConstrainedConnectivity(NetworkDynamics):
     ) -> None:
         vel.nodes.activity = (
             1
-            / torch.max(params.nodes.time_const, torch.tensor(dt).float())
+            / torch.max(
+                params.nodes.time_const,
+                params.nodes.time_const.new_tensor(dt),
+            )
             * (
                 -state.nodes.activity
                 + params.nodes.bias
