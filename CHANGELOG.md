@@ -1,5 +1,40 @@
 # Changelog
 
+## [v1.2.0] - 2026-08-06
+
+### Features
+- Added precomputed response normalization constants for the released ensemble
+  (`flyvis/data/responses_norm.h5`, ~40 kB, shipped with the package).
+  `Ensemble.responses_norm` now loads them silently instead of simulating 30 minutes
+  of naturalistic stimuli per model, which makes the paper figures reproducible on a
+  laptop. Constants computed for custom ensembles are cached in the ensemble
+  directory (`<ensemble_dir>/responses_norm.h5`). Constants are keyed by model name
+  and validated against the SHA256 of the checkpoint they were computed from, so
+  the order of an ensemble is irrelevant and a retrained checkpoint is recomputed
+  rather than silently reused.
+- Added `flyvis responses-norm` to compute and store the constants of an ensemble.
+- Added `angular_tuning`, which returns the unnormalized speed- and width-averaged
+  tuning that `plot_angular_tuning` plots, so that several curves can be put on a
+  common scale.
+- Added `model_reduction` to `plot_angular_tuning` to reduce across models with
+  something other than the mean, e.g. the median, and `normalize_by` to override the
+  per-curve normalization with a shared constant.
+- Added `examples/figure_04_top_models.py`, which reproduces figure 4a,b for the
+  models with the lowest task error instead of the task-optimal cluster.
+
+### Infrastructure
+- Added a `Release` workflow that builds and checks the distributions on every push
+  to `main` and publishes them to PyPI via trusted publishing when a GitHub Release
+  is published. It verifies that the version matches the release tag and that the
+  precomputed response norms are present in both the wheel and the source
+  distribution before uploading.
+- Made the test suite deterministic. Five tests asserted on unseeded randomness and
+  failed on roughly one run in four between them. The global generators are now
+  seeded before every test, `FLYVIS_TEST_SEED` re-runs the suite under a different
+  seed, and the assertions that were only true for most draws were corrected.
+
+[v1.2.0]: https://github.com/TuragaLab/flyvis/releases/tag/v1.2.0
+
 ## [v1.1.3] - 2026-03-07
 
 ### Bug Fixes
