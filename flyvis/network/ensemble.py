@@ -41,7 +41,7 @@ from flyvis.analysis.clustering import (
     get_cluster_to_indices,
 )
 from flyvis.analysis.visualization import plots
-from flyvis.connectome import get_avgfilt_connectome
+from flyvis.connectome import get_connectome_view
 from flyvis.utils.cache_utils import context_aware_cache
 from flyvis.utils.chkpt_utils import (
     best_checkpoint_default_fn,
@@ -107,7 +107,7 @@ class Ensemble(dict):
         path: Union[str, Path, Iterable, "EnsembleDir"],
         network_class: nn.Module = Network,
         root_dir: Path = flyvis.results_dir,
-        connectome_getter: Callable = get_avgfilt_connectome,
+        connectome_getter: Callable = get_connectome_view,
         checkpoint_mapper: Callable = resolve_checkpoints,
         best_checkpoint_fn: Callable = best_checkpoint_default_fn,
         best_checkpoint_fn_kwargs: dict = {

@@ -186,3 +186,5 @@ docs/site/
 *.dev
 dev
 .DS_Store
+outputs
+**/**/LEGACY_AUDIT.md

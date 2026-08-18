@@ -27,7 +27,7 @@ from flyvis.analysis import (
 )
 from flyvis.connectome import (
     ConnectomeView,
-    get_avgfilt_connectome,
+    get_connectome_view,
 )
 from flyvis.task.tasks import init_decoder
 from flyvis.utils.cache_utils import context_aware_cache, make_hashable
@@ -87,7 +87,7 @@ class NetworkView:
         network_dir: Union[str, PathLike, NetworkDir],
         network_class: nn.Module = Network,
         root_dir: PathLike = flyvis.results_dir,
-        connectome_getter: Callable = get_avgfilt_connectome,
+        connectome_getter: Callable = get_connectome_view,
         checkpoint_mapper: Callable = resolve_checkpoints,
         best_checkpoint_fn: Callable = best_checkpoint_default_fn,
         best_checkpoint_fn_kwargs: dict = {

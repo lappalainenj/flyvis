@@ -37,11 +37,13 @@ from flyvis.utils import df_utils, hex_utils, nodes_edges_utils
 
 __all__ = [
     "ConnectomeFromAvgFilters",
+    "ConnectomeWithPrunedEdges",
     "ConnectomeView",
     "ReceptiveFields",
     "ProjectiveFields",
     "init_connectome",
     "get_avgfilt_connectome",
+    "get_connectome_view",
 ]
 
 
@@ -269,6 +271,100 @@ class ConnectomeFromAvgFilters(Directory):
             node_indices = np.nonzero(self.nodes["type"][:] == cell_type)[0]
             layer_index[cell_type.decode()] = np.int64(node_indices)
         self.nodes.layer_index = layer_index
+
+
+@register_connectome
+@root(flyvis.root_dir / "connectome")
+class ConnectomeWithPrunedEdges(Directory):
+    """A connectome holding a subset of another connectome's edges.
+
+    Nodes are copied from the parent unchanged, edges are filtered by a boolean
+    keep-mask in the parent's edge order. Order preservation matters: a per-edge
+    parameter vector of the parent (e.g. an `EdgeWiseNormal` magnitude) stays
+    aligned with `edges` when filtered by the same mask.
+
+    Use this to drop edges that a pruned network no longer uses, so that
+    simulations do not spend time and memory on edges whose weight is zero.
+
+    Args:
+        parent: Config of the connectome to prune, including its `type`.
+        edge_mask_file: Path to a boolean `.npy` keep-mask of length
+            `len(parent.edges)`. Relative paths resolve against `flyvis.root_dir`.
+        edge_mask_sha256: Optional checksum of the mask contents. Recommended:
+            it makes the stored config identify the mask itself rather than only
+            its file name.
+        n_edges: Optional expected number of kept edges, checked against the mask.
+        extent: The array radius in columns, as in the parent. Kept in this config
+            because consumers such as decoders read `connectome.config.extent`.
+            Defaults to the parent's extent and is checked against it.
+
+    Attributes:
+        Same as `ConnectomeFromAvgFilters`, with `edges` restricted to the mask.
+    """
+
+    def __init__(
+        self,
+        parent: Dict[str, Any] = None,
+        edge_mask_file: str = "",
+        edge_mask_sha256: str = "",
+        n_edges: Optional[int] = None,
+        extent: Optional[int] = None,
+    ) -> None:
+        import hashlib
+
+        parent_connectome = init_connectome(**dict(parent))
+
+        parent_extent = parent_connectome.config.get("extent", None)
+        if extent is not None and parent_extent is not None and extent != parent_extent:
+            raise ValueError(
+                f"extent {extent} does not match the parent's extent {parent_extent}"
+            )
+
+        mask_path = Path(edge_mask_file)
+        if not mask_path.is_absolute():
+            mask_path = flyvis.root_dir / edge_mask_file
+        mask = np.load(mask_path).astype(bool)
+
+        n_parent_edges = len(parent_connectome.edges.source_index[:])
+        if mask.size != n_parent_edges:
+            raise ValueError(
+                f"edge mask has {mask.size} entries but the parent connectome has "
+                f"{n_parent_edges} edges"
+            )
+        checksum = hashlib.sha256(mask.tobytes()).hexdigest()
+        if edge_mask_sha256 and checksum != edge_mask_sha256:
+            raise ValueError(
+                f"edge mask checksum mismatch: {checksum} != {edge_mask_sha256}"
+            )
+        if n_edges is not None and int(mask.sum()) != n_edges:
+            raise ValueError(
+                f"edge mask keeps {int(mask.sum())} edges but n_edges is {n_edges}"
+            )
+
+        for key in [
+            "unique_cell_types",
+            "input_cell_types",
+            "intermediate_cell_types",
+            "output_cell_types",
+            "layout",
+            "central_cells_index",
+        ]:
+            setattr(self, key, parent_connectome[key][:])
+
+        self.nodes = {  # type: ignore
+            key: parent_connectome.nodes[key][:]
+            for key in parent_connectome.nodes.keys()
+            if key != "layer_index"
+        }
+        self.nodes.layer_index = {
+            key: parent_connectome.nodes.layer_index[key][:]
+            for key in parent_connectome.nodes.layer_index.keys()
+        }
+
+        self.edges = {  # type: ignore
+            key: parent_connectome.edges[key][:][mask]
+            for key in parent_connectome.edges.keys()
+        }
 
 
 # -- Node construction ---------------------------------------------------------
@@ -1372,6 +1468,24 @@ def get_avgfilt_connectome(config: dict) -> ConnectomeView:
         ConnectomeView instance.
     """
     return ConnectomeView(ConnectomeFromAvgFilters(**config))
+
+
+def get_connectome_view(config: dict) -> ConnectomeView:
+    """Create a ConnectomeView from any registered connectome config.
+
+    Dispatches on `config["type"]`, falling back to ConnectomeFromAvgFilters for
+    configs that predate the type key.
+
+    Args:
+        config: Connectome configuration, optionally including `type`.
+
+    Returns:
+        ConnectomeView instance.
+    """
+    config = dict(config)
+    if "type" not in config:
+        return get_avgfilt_connectome(config)
+    return ConnectomeView(init_connectome(**config))
 
 
 def is_connectome_protocol(obj: Any) -> bool:

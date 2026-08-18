@@ -7,7 +7,12 @@ from torch import nn
 
 from flyvis.utils.tensor_utils import AutoDeref, RefTensor
 
-__all__ = ["NetworkDynamics", "PPNeuronIGRSynapses"]
+__all__ = [
+    "NetworkDynamics",
+    "PPNeuronIGRSynapses",
+    "ConstrainedConnectivityAndSign",
+    "ConstrainedConnectivity",
+]
 
 activation_fns: Dict[str, nn.Module] = {
     "relu": nn.ReLU,
@@ -235,4 +240,105 @@ class PPNeuronIGRSynapses(NetworkDynamics):
         Returns:
             torch.Tensor: The calculated internal chemical current.
         """
+        return params.edges.weight * self.activation(state.sources.activity)
+
+
+class ConstrainedConnectivityAndSign(NetworkDynamics):
+    """Constrained connectivity and sign but free magnitude weights.
+
+    Weight is computed as sign * magnitude, where sign is fixed from the
+    connectome and magnitude is a free parameter initialized via Kaiming normal.
+    """
+
+    def write_derived_params(
+        self, params: AutoDeref[str, AutoDeref[str, RefTensor]], **kwargs
+    ) -> None:
+        params.edges.weight = params.edges.sign * params.edges.magnitude
+
+    def write_initial_state(
+        self,
+        state: AutoDeref[str, AutoDeref[str, RefTensor]],
+        params: AutoDeref[str, AutoDeref[str, RefTensor]],
+        **kwargs,
+    ) -> None:
+        state.nodes.activity = params.nodes.bias
+
+    def write_state_velocity(
+        self,
+        vel: AutoDeref[str, AutoDeref[str, RefTensor]],
+        state: AutoDeref[str, AutoDeref[str, RefTensor]],
+        params: AutoDeref[str, AutoDeref[str, RefTensor]],
+        target_sum: Callable,
+        x_t: torch.Tensor,
+        dt: float,
+        **kwargs,
+    ) -> None:
+        vel.nodes.activity = (
+            1
+            / torch.max(params.nodes.time_const, torch.tensor(dt).float())
+            * (
+                -state.nodes.activity
+                + params.nodes.bias
+                + target_sum(
+                    params.edges.weight * self.activation(state.sources.activity)
+                )
+                + x_t
+            )
+        )
+
+    def currents(
+        self,
+        state: AutoDeref[str, AutoDeref[str, RefTensor]],
+        params: AutoDeref[str, AutoDeref[str, RefTensor]],
+    ) -> torch.Tensor:
+        return params.edges.weight * self.activation(state.sources.activity)
+
+
+class ConstrainedConnectivity(NetworkDynamics):
+    """Constrained connectivity only, with free magnitude weights (no sign constraint).
+
+    Weight is the magnitude directly — sign is not constrained.
+    """
+
+    def write_derived_params(
+        self, params: AutoDeref[str, AutoDeref[str, RefTensor]], **kwargs
+    ) -> None:
+        params.edges.weight = params.edges.magnitude
+
+    def write_initial_state(
+        self,
+        state: AutoDeref[str, AutoDeref[str, RefTensor]],
+        params: AutoDeref[str, AutoDeref[str, RefTensor]],
+        **kwargs,
+    ) -> None:
+        state.nodes.activity = params.nodes.bias
+
+    def write_state_velocity(
+        self,
+        vel: AutoDeref[str, AutoDeref[str, RefTensor]],
+        state: AutoDeref[str, AutoDeref[str, RefTensor]],
+        params: AutoDeref[str, AutoDeref[str, RefTensor]],
+        target_sum: Callable,
+        x_t: torch.Tensor,
+        dt: float,
+        **kwargs,
+    ) -> None:
+        vel.nodes.activity = (
+            1
+            / torch.max(params.nodes.time_const, torch.tensor(dt).float())
+            * (
+                -state.nodes.activity
+                + params.nodes.bias
+                + target_sum(
+                    params.edges.weight * self.activation(state.sources.activity)
+                )
+                + x_t
+            )
+        )
+
+    def currents(
+        self,
+        state: AutoDeref[str, AutoDeref[str, RefTensor]],
+        params: AutoDeref[str, AutoDeref[str, RefTensor]],
+    ) -> torch.Tensor:
         return params.edges.weight * self.activation(state.sources.activity)
