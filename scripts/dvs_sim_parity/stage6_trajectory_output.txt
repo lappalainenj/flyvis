@@ -1,0 +1,53 @@
+== per-iteration loss ==
+  iter        dvs-sim   flyvis default   flyvis original
+     0     330.434998     332.113159     330.434998
+     1    1868.284302    1872.703369    1868.284302
+     2    1507.166138    1512.445435    1507.166138
+     3    2577.598145    2562.041504    2577.598145
+     4     140.163177     141.846207     140.163177
+     5     235.807983     236.467987     235.807983
+     6    2306.925537    2293.179932    2306.925537
+     7    2808.651123    2809.267334    2808.651123
+     8     418.742218     417.924438     418.742218
+     9     197.031342     198.238525     197.031342
+    10     147.553833     147.550385     147.553833
+    11     589.933105     572.179810     589.933105
+    12     327.124084     328.779144     327.124084
+    13    1867.666870    1872.102783    1867.666870
+    14    1507.858032    1513.126587    1507.858032
+    15    2577.332031    2561.730957    2577.332031
+    16     140.566132     142.270157     140.566132
+    17     236.228317     236.916565     236.228317
+    18    2305.792236    2292.023926    2305.792236
+    19    2807.746582    2808.330322    2807.746582
+    20     416.868408     416.038971     416.868408
+    21     196.963394     198.177628     196.963394
+    22     146.512299     146.503067     146.512299
+    23     588.941589     571.173340     588.941589
+
+== trajectory agreement with dvs-sim ==
+  loss: flyvis default   DIFFERS  max_abs=1.777e+01  max_rel=3.017e-02  |a|=7263.12  |b|=7245.69
+  loss: flyvis original  equal
+
+== network parameters after training ==
+ flyvis default vs dvs-sim:
+  nodes_bias          DIFFERS  max_abs=4.610e-05  max_rel=1.055e-04  |a|=4.08652  |b|=4.08654
+  nodes_time_const    DIFFERS  max_abs=1.338e-04  max_rel=2.654e-03  |a|=0.403011  |b|=0.403087
+  edges_sign          equal
+  edges_syn_count     equal
+  edges_syn_strength  DIFFERS  max_abs=1.039e-04  max_rel=9.926e-01  |a|=0.166125  |b|=0.166108
+ flyvis original vs dvs-sim:
+  nodes_bias          equal
+  nodes_time_const    DIFFERS  max_abs=3.725e-09  max_rel=7.517e-08  |a|=0.403011  |b|=0.403011
+  edges_sign          equal
+  edges_syn_count     equal
+  edges_syn_strength  DIFFERS  max_abs=2.794e-09  max_rel=1.377e-06  |a|=0.166125  |b|=0.166125
+
+== decoder parameters after training ==
+ flyvis original vs dvs-sim:
+  base.0.weight     DIFFERS  max_abs=3.725e-09  max_rel=6.001e-04  |a|=0.0769724  |b|=0.0769724
+  base.0.bias       DIFFERS  max_abs=1.075e-04  max_rel=9.648e-02  |a|=0.00284875  |b|=0.00315295
+  base.1.weight     equal
+  base.1.bias       equal
+  decoder.0.weight  DIFFERS  max_abs=2.328e-10  max_rel=3.017e-07  |a|=0.0205477  |b|=0.0205477
+  decoder.0.bias    equal

@@ -1,0 +1,52 @@
+# Task configuration reproducing the training regime of the runs behind the
+# published models: the temporal resampling of input and targets as it was
+# implemented then (see MultiTaskSintel.original_sampling).
+dataset:
+  type: MultiTaskSintel
+  tasks:
+    - flow
+  boxfilter:
+    extent: 15
+    kernel_size: 13
+  vertical_splits: 3
+  n_frames: 19
+  center_crop_fraction: 0.7
+  dt: 0.02
+  augment: true
+  random_temporal_crop: true
+  all_frames: false
+  resampling: true
+  interpolate: true
+  p_flip: 0.5
+  p_rot: 0.5
+  contrast_std: 0.2
+  brightness_std: 0.1
+  gaussian_white_noise: 0.08
+  gamma_std: null
+  _init_cache: true
+  original_sampling: true
+  unittest: false
+  flip_axes:
+    - 0
+    - 1
+    - 2
+    - 3
+decoder:
+  flow:
+    type: DecoderGAVP
+    shape:
+      - 8
+      - 2
+    kernel_size: 5
+    const_weight: 0.001
+    n_out_features: null
+    p_dropout: 0.5
+loss:
+  flow: l2norm
+task_weights: null
+batch_size: 4
+n_iters: 250000
+n_folds: 4
+fold: 1
+seed: 0
+original_split: true

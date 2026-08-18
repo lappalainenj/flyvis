@@ -17,15 +17,44 @@ class Interpolate(Augmentation):
         target_framerate (float): The target framerate after interpolation.
         mode (str): The interpolation mode.
         align_corners (bool | None): Alignment of corners for interpolation.
+        original_sampling (bool): Reproduce the temporal sampling of the models
+            published with the paper, see note.
+
+    Note: original_sampling
+        The models published with the paper were trained with a different
+        implementation of the temporal upsampling, in which
+
+        * the piecewise-constant sample indices are
+          `floor(arange(0, n_frames, original_framerate / target_framerate))`
+          instead of the indices that `nearest-exact` interpolation produces, and
+        * the linear interpolation of the targets used `align_corners=False`.
+
+        Both choices change the data the network sees at every iteration, so
+        reproducing that training regime requires reproducing them.
     """
 
-    def __init__(self, original_framerate: int, target_framerate: float, mode: str):
+    def __init__(
+        self,
+        original_framerate: int,
+        target_framerate: float,
+        mode: str,
+        original_sampling: bool = False,
+    ):
         self.original_framerate = original_framerate
         self.target_framerate = target_framerate
         self.mode = mode
+        self.original_sampling = original_sampling
         self.align_corners = (
-            True if mode in ["linear", "bilinear", "bicubic", "trilinear"] else None
+            (not original_sampling)
+            if mode in ["linear", "bilinear", "bicubic", "trilinear"]
+            else None
         )
+
+    def _size(self, length: int) -> int:
+        """Number of samples the resampled sequence has."""
+        if self.original_sampling:
+            return len(self.piecewise_constant_indices(length))
+        return math.ceil(self.target_framerate / self.original_framerate * length)
 
     def transform(self, sequence: torch.Tensor, dim: int = 0) -> torch.Tensor:
         """Resample the sequence along the specified dimension.
@@ -43,11 +72,13 @@ class Interpolate(Augmentation):
         assert sequence.ndim == 3, "only 3D sequences are supported"
         if sequence.dtype == torch.long:
             sequence = sequence.float()
+        if self.original_sampling and self.mode == "nearest-exact":
+            # index-based sampling instead of interpolation, see class note
+            indices = self.piecewise_constant_indices(sequence.shape[dim])
+            return sequence.index_select(dim, indices)
         return nnf.interpolate(
             sequence.transpose(dim, -1),
-            size=math.ceil(
-                self.target_framerate / self.original_framerate * sequence.shape[dim]
-            ),
+            size=self._size(sequence.shape[dim]),
             mode=self.mode,
             align_corners=self.align_corners,
         ).transpose(dim, -1)
@@ -61,6 +92,12 @@ class Interpolate(Augmentation):
         Returns:
             torch.Tensor: Indices for piecewise constant interpolation.
         """
+        if self.original_sampling:
+            return torch.arange(
+                0,
+                length - 1e-6,
+                self.original_framerate / self.target_framerate,
+            ).long()
         indices = torch.arange(length, dtype=torch.float)[None, None]
         return (
             nnf.interpolate(

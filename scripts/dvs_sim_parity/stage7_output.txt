@@ -1,0 +1,17 @@
+== input and target differences over all 69 sequences (augmentation off) ==
+  input  relative L2 difference: median 0.0687  max 0.2457
+  target relative L2 difference: median 0.0834  max 0.1793
+  target max abs difference:     median 2.8099  max 25.5841
+  target mean abs value:         median 1.0286
+  target worst-frame error / typical target magnitude: 2.73x
+
+== same network, two versions of the data ==
+  loss on flyvis data:  330.333069
+  loss on dvs-sim data: 328.668213
+  difference:           1.664856  (0.507% of the loss)
+  gradient cosine similarity: 0.999999
+  gradient relative L2 difference: 0.007267
+
+  for scale, the same comparison between two genuinely different batches:
+  loss on a different batch: 2289.982910  (difference 1961.314697)
+  gradient cosine similarity between different batches: 0.851091
