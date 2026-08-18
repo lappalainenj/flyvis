@@ -206,7 +206,10 @@ class PPNeuronIGRSynapses(NetworkDynamics):
         """
         vel.nodes.activity = (
             1
-            / torch.max(params.nodes.time_const, torch.tensor(dt).float())
+            / torch.max(
+                params.nodes.time_const,
+                params.nodes.time_const.new_tensor(dt),
+            )
             * (
                 -state.nodes.activity
                 + params.nodes.bias

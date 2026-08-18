@@ -158,7 +158,10 @@ class Stimulus:
         ):
             self.buffer.zero_()
             return
-        self.buffer = torch.zeros((self.n_samples, self.n_frames, self.n_nodes))
+        device = self.buffer.device if hasattr(self, "buffer") else None
+        self.buffer = torch.zeros(
+            (self.n_samples, self.n_frames, self.n_nodes), device=device
+        )
         self._nonzero = False
 
     @property

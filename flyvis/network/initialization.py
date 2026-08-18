@@ -157,15 +157,17 @@ class Normal(InitialDistribution):
             _values = torch.tensor(mean).float()
         elif mode == "sample":
             # set seed for reproducibility and avoid seeding the global RNG
-            generator = torch.Generator(device=device)
+            _mean = torch.tensor(mean).float()
+            _std = torch.tensor(std).float()
+            generator = torch.Generator(device=_mean.device)
             if seed is not None:
                 generator.manual_seed(seed)
             else:
                 generator.seed()
             try:
                 _values = torch.normal(
-                    torch.tensor(mean).float(),
-                    torch.tensor(std).float(),
+                    _mean,
+                    _std,
                     generator=generator,
                 )
             except RuntimeError as e:

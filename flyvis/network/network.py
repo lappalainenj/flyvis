@@ -135,9 +135,18 @@ class Network(nn.Module):
         self.dynamics = forward_subclass(NetworkDynamics, dynamics)
 
         # Load constant indices into memory.
-        # Store source/target indices.
-        self._source_indices = torch.tensor(self.connectome.edges.source_index[:])
-        self._target_indices = torch.tensor(self.connectome.edges.target_index[:])
+        # Store source/target indices as non-persistent buffers so they move
+        # with .to() but don't appear in state_dict (for checkpoint compat).
+        self.register_buffer(
+            "_source_indices",
+            torch.tensor(self.connectome.edges.source_index[:]),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_target_indices",
+            torch.tensor(self.connectome.edges.target_index[:]),
+            persistent=False,
+        )
 
         self.n_nodes = len(self.connectome.nodes.index)
         self.n_edges = len(self.connectome.edges.source_index)
@@ -220,6 +229,17 @@ class Network(nn.Module):
         self.stimulus = init_stimulus(self.connectome, **stimulus_config)
 
         logger.info("Initialized network with %s parameters.", self.num_parameters)
+
+    def _apply(self, fn):
+        """Override to also move stimulus buffer and parameter reader indices."""
+        super()._apply(fn)
+        # Move parameter reader index tensors
+        for param in list(self.node_params.values()) + list(self.edge_params.values()):
+            param.readers = {k: fn(v) for k, v in param.readers.items()}
+        # Move stimulus buffer
+        if hasattr(self, "stimulus") and hasattr(self.stimulus, "buffer"):
+            self.stimulus.buffer = fn(self.stimulus.buffer)
+        return self
 
     def __repr__(self):
         return self.config.__repr__().replace("Namespace", "Network", 1)
@@ -339,7 +359,7 @@ class Network(nn.Module):
         Returns:
             Node-level input. Shape is (batch_size, n_nodes).
         """
-        result = torch.zeros((*x.shape[:-1], self.n_nodes))
+        result = torch.zeros((*x.shape[:-1], self.n_nodes), device=x.device)
         # signature: tensor.scatter_add_(dim, index, other)
         result.scatter_add_(
             -1,  # nodes dim

@@ -185,3 +185,4 @@ import_profile*
 docs/site/
 *.dev
 dev
+.DS_Store
