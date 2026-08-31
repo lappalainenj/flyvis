@@ -1,0 +1,35 @@
+# A random connectome that keeps the locality of the default connectome: every
+# edge connects columns exactly as many lattice steps apart as it did before, so
+# the columnar-distance histogram is reproduced edge for edge. What is randomized
+# is the *direction*: each cell-type pair's offset filter is mapped by a random
+# element of the hexagonal symmetry group, independently per pair, which destroys
+# the relative orientation of different pairs' filters -- the substrate of
+# direction selectivity -- while leaving each cell's projective field the same
+# shape and size.
+#
+# Preserved exactly: edge count, every edge's ring distance, the ring histogram,
+# every cell's out-degree, the 604 cell-type pairs, and hence the 734 free
+# parameters and their initial values.
+#
+# Not preserved exactly: in-degree. A rotated filter clips differently against
+# the finite array, so roughly a third of cells are off by a few edges (about 4%
+# of total in-degree). The median in-degree is unchanged. This is the price of
+# keeping locality: on a connectome compiled from average filters, exact degrees
+# and preserved locality together admit no randomization at all.
+#
+# Select it on the command line and give each ensemble member its own seed:
+#
+#   flyvis train-single task_name=flow ensemble_and_network_id=0301/000 \
+#       network/connectome=connectome_locality_preserving_random \
+#       network.connectome.seed=0 \
+#       task=task_original scheduler=scheduler_original
+type: ConnectomeWithRewiredEdges
+parent:
+  type: ConnectomeFromAvgFilters
+  file: fib25-fib19_v2.2.json
+  extent: 15
+  n_syn_fill: 1
+seed: 0
+mode: filter_symmetry
+preserve: [source_type, target_type]
+extent: 15

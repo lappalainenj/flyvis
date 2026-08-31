@@ -1,0 +1,33 @@
+# A random connectome with the same in- and out-degree per cell as the default
+# connectome, and the same cell-type-level connectivity, but random wiring
+# between individual cells. The null model for asking whether the connectome's
+# specific wiring matters beyond its degree statistics.
+#
+# Select it on the command line and give each ensemble member its own seed:
+#
+#   flyvis train-single task_name=flow ensemble_and_network_id=0300/000 \
+#       network/connectome=connectome_degree_matched_random \
+#       network.connectome.seed=0 \
+#       task=task_original scheduler=scheduler_original
+#
+# The rest of the network config is unchanged, so the network has the same 734
+# free parameters with the same initial values as on the default connectome.
+#
+# Warning: this variant does NOT preserve locality. Targets are drawn from the
+# whole cell-type block, so edges that connected neighbouring columns end up
+# spanning the array: 78% of edges leave their columnar ring, and the mean ring
+# distance goes from 1.2 to 13.8. Since 90% of the real connectome's edges are
+# within two rings, the result has no coherent spatial operator left to learn.
+# Use connectome_locality_preserving_random.yaml unless that is what you want.
+# Ensemble flow/0300 was trained with this config.
+type: ConnectomeWithRewiredEdges
+parent:
+  type: ConnectomeFromAvgFilters
+  file: fib25-fib19_v2.2.json
+  extent: 15
+  n_syn_fill: 1
+seed: 0
+mode: unconstrained
+swaps_per_edge: 20
+preserve: [source_type, target_type]
+extent: 15

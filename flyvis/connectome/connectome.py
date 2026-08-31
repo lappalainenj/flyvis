@@ -34,10 +34,13 @@ from flyvis.analysis.visualization import plots, plt_utils
 from flyvis.analysis.visualization.figsize_utils import figsize_from_n_items
 from flyvis.analysis.visualization.network_fig import WholeNetworkFigure
 from flyvis.utils import df_utils, hex_utils, nodes_edges_utils
+from flyvis.utils.type_utils import byte_to_str
 
 __all__ = [
     "ConnectomeFromAvgFilters",
     "ConnectomeWithPrunedEdges",
+    "ConnectomeWithRewiredEdges",
+    "hex_ring_distance",
     "ConnectomeView",
     "ReceptiveFields",
     "ProjectiveFields",
@@ -365,6 +368,402 @@ class ConnectomeWithPrunedEdges(Directory):
             key: parent_connectome.edges[key][:][mask]
             for key in parent_connectome.edges.keys()
         }
+
+
+def _contains(sorted_keys: NDArray, query: NDArray) -> NDArray:
+    """Whether each element of `query` occurs in the sorted array `sorted_keys`."""
+    if sorted_keys.size == 0:
+        return np.zeros(query.shape, dtype=bool)
+    pos = np.clip(np.searchsorted(sorted_keys, query), 0, sorted_keys.size - 1)
+    return sorted_keys[pos] == query
+
+
+def hex_ring_distance(du: NDArray, dv: NDArray) -> NDArray:
+    """Ring distance between two columns of a hexagonal lattice.
+
+    In the axial coordinates the connectome stores, the number of steps between
+    two columns is `(|du| + |dv| + |du + dv|) / 2`. This -- not the Euclidean
+    length of `(du, dv)` -- is the lattice's notion of distance: the six nearest
+    neighbours of a column are at ring 1 but at Euclidean radii 1 and sqrt(2).
+    """
+    return (np.abs(du) + np.abs(dv) + np.abs(du + dv)) // 2
+
+
+def rewire_targets_within_block(
+    source: NDArray,
+    target: NDArray,
+    rng: np.random.Generator,
+    passes: int,
+    n_nodes: int,
+    nodes_u: Optional[NDArray] = None,
+    nodes_v: Optional[NDArray] = None,
+    keep_ring: Optional[int] = None,
+) -> Tuple[NDArray, int]:
+    """Randomize which source connects to which target, at fixed degrees.
+
+    Permutes `target` while leaving `source` untouched, which preserves every
+    source's out-degree (its rows are unchanged) and every target's in-degree
+    (the multiset of targets is unchanged) by construction. The permutation is
+    reached by double-edge swaps -- exchanging the targets of two edges -- and a
+    swap is rejected if it would duplicate an edge that already exists, so the
+    graph stays simple.
+
+    Args:
+        source: Source node indices of one block of edges.
+        target: Target node indices of the same block. Modified in place.
+        rng: Random generator.
+        passes: Number of sweeps. Each sweep proposes one swap per two edges.
+        n_nodes: Number of nodes, used to pack (source, target) into one integer.
+        nodes_u: Column coordinate of every node. Required with `keep_ring`.
+        nodes_v: Row coordinate of every node. Required with `keep_ring`.
+        keep_ring: If given, a swap is additionally rejected unless both edges it
+            creates connect columns exactly this many lattice steps apart. Every
+            edge then keeps its ring distance and only its direction within the
+            ring is randomized, so the connectome's locality is preserved
+            edge-for-edge rather than only on average.
+
+    Returns:
+        The rewired target array and the number of accepted swaps.
+    """
+    m = source.size
+    if m < 2:
+        return target, 0
+
+    source = source.astype(np.int64)
+    keys = np.sort(source * n_nodes + target)
+    n_accepted = 0
+
+    for _ in range(passes):
+        perm = rng.permutation(m)
+        if m % 2:
+            perm = perm[:-1]
+        i, j = perm[0::2], perm[1::2]
+
+        # the two edges the swap would create
+        new_i = source[i] * n_nodes + target[j]
+        new_j = source[j] * n_nodes + target[i]
+
+        # reject swaps that would duplicate an existing edge, or whose two new
+        # edges coincide with each other
+        ok = ~(_contains(keys, new_i) | _contains(keys, new_j)) & (new_i != new_j)
+
+        if keep_ring is not None:
+            # reject swaps that would move an edge out of its ring
+            for src, tgt in ((source[i], target[j]), (source[j], target[i])):
+                ring = hex_ring_distance(
+                    nodes_u[tgt] - nodes_u[src], nodes_v[tgt] - nodes_v[src]
+                )
+                ok &= ring == keep_ring
+
+        # reject swaps that would collide with another swap of the same sweep
+        proposed = np.concatenate([new_i[ok], new_j[ok]])
+        unique, counts = np.unique(proposed, return_counts=True)
+        collisions = np.sort(unique[counts > 1])
+        if collisions.size:
+            ok &= ~(_contains(collisions, new_i) | _contains(collisions, new_j))
+
+        i, j = i[ok], j[ok]
+        if i.size == 0:
+            continue
+        target[i], target[j] = target[j].copy(), target[i].copy()
+        keys = np.sort(source * n_nodes + target)
+        n_accepted += i.size
+
+    return target, n_accepted
+
+
+def hex_ring_offsets(ring: int) -> NDArray:
+    """All columnar offsets exactly `ring` lattice steps from the origin."""
+    if ring == 0:
+        return np.zeros((1, 2), dtype=np.int64)
+    span = np.arange(-ring, ring + 1)
+    du, dv = np.meshgrid(span, span, indexing="ij")
+    du, dv = du.ravel(), dv.ravel()
+    keep = hex_ring_distance(du, dv) == ring
+    return np.stack([du[keep], dv[keep]], axis=1)
+
+
+def rotate_filter_within_block(
+    source: NDArray,
+    target: NDArray,
+    rng: np.random.Generator,
+    nodes_u: NDArray,
+    nodes_v: NDArray,
+    node_at: Dict[Tuple[int, int], int],
+    n_nodes: int,
+) -> Tuple[NDArray, int, int]:
+    """Map one cell-type pair's offset filter by a random lattice symmetry.
+
+    The offset of every edge is mapped by the same randomly drawn element of the
+    hexagonal symmetry group -- one of six rotations, optionally after a
+    reflection. Since the group preserves ring distance, every edge keeps the
+    number of lattice steps between the columns it connects; what changes is the
+    direction, and because the element is drawn per cell-type pair, the *relative*
+    orientation of different pairs' filters is destroyed.
+
+    A symmetry is injective, so mapping the filter cannot make two edges coincide.
+    It can, however, send an edge's target outside the finite array. Such an edge
+    is reassigned to another offset in the same ring whose target exists and is
+    not already taken, which keeps the edge count, the source's out-degree and the
+    ring distance intact without duplicating an edge.
+
+    Args:
+        source: Source node indices of one cell-type pair's edges.
+        target: Target node indices of the same edges.
+        rng: Random generator.
+        nodes_u: Column coordinate of every node.
+        nodes_v: Row coordinate of every node.
+        node_at: Maps (u, v) to the node index of the target cell type.
+        n_nodes: Number of nodes, used to pack (source, target) into one integer.
+
+    Returns:
+        The new target array, the number of edges that had to be reassigned, and
+        the number that could not be placed at all and kept their original target.
+    """
+    du = nodes_u[target] - nodes_u[source]
+    dv = nodes_v[target] - nodes_v[source]
+    ring = hex_ring_distance(du, dv)
+
+    g = int(rng.integers(0, 12))
+    if g >= 6:
+        du, dv = dv.copy(), du.copy()
+    for _ in range(g % 6):
+        du, dv = -dv, du + dv
+
+    su, sv = nodes_u[source], nodes_v[source]
+    new_target = np.full(source.size, -1, dtype=np.int64)
+    for k in range(source.size):
+        new_target[k] = node_at.get((su[k] + du[k], sv[k] + dv[k]), -1)
+
+    # the symmetry is injective, so the placed edges are already distinct
+    assigned = set(
+        (
+            source[new_target >= 0].astype(np.int64) * n_nodes
+            + new_target[new_target >= 0]
+        ).tolist()
+    )
+
+    n_reassigned = n_unplaced = 0
+    candidates: Dict[int, NDArray] = {}
+    for k in np.flatnonzero(new_target < 0):
+        r = int(ring[k])
+        if r not in candidates:
+            candidates[r] = hex_ring_offsets(r)
+        options = candidates[r]
+        for idx in rng.permutation(len(options)):
+            cand = node_at.get((su[k] + options[idx, 0], sv[k] + options[idx, 1]), -1)
+            if cand < 0:
+                continue
+            key = int(source[k]) * n_nodes + int(cand)
+            if key in assigned:
+                continue
+            new_target[k] = cand
+            assigned.add(key)
+            n_reassigned += 1
+            break
+        else:
+            new_target[k] = target[k]
+            assigned.add(int(source[k]) * n_nodes + int(target[k]))
+            n_unplaced += 1
+
+    return new_target, n_reassigned, n_unplaced
+
+
+@register_connectome
+@root(flyvis.root_dir / "connectome")
+class ConnectomeWithRewiredEdges(Directory):
+    """A degree-preserving random rewiring of another connectome's edges.
+
+    Nodes are copied from the parent unchanged. Edges keep their positions in the
+    edge table but are rewired so that every cell's in-degree and out-degree is
+    exactly the parent's, while which individual cells are connected is random.
+    The result is therefore a different connectome with the parent's degree
+    sequence -- the null model for asking whether a connectome's specific wiring
+    matters beyond its degree statistics.
+
+    Swaps may not cross blocks of edges that agree on `preserve` (by default
+    `source_type` and `target_type`), so the cell-type-level connectome is
+    retained and only the cell-level wiring is randomized. For a network
+    parameterized as the connectome-constrained model is, this is what keeps the
+    comparison controlled: `sign` and `syn_strength` are shared per
+    (source_type, target_type) and initialized from the block's mean synapse
+    count, and preserving the blocks preserves both the number of free
+    parameters and their initial values exactly.
+
+    Warning: `mode` decides whether the null preserves locality
+        A connectome compiled from average filters is *exactly* convolutional:
+        given a source cell, a cell-type pair and a columnar offset, the target
+        is uniquely determined. Degrees and offsets together therefore admit no
+        randomization at all -- requiring a swap to preserve both edges' offsets
+        forces it to be a no-op. A null model must give up one of them:
+
+        * `mode="unconstrained"` gives up locality. Targets are drawn from the
+          whole block, so edges that connected neighbouring columns end up
+          spanning the array. Degrees are exact, but the connectome is no longer
+          columnar, and most of its edges were.
+        * `mode="within_ring"` keeps locality. Swaps are confined to edges
+          connecting columns the same number of lattice steps apart, and are
+          rejected unless both new edges stay at that distance. Every edge then
+          keeps its ring distance exactly and degrees are still exact -- but on a
+          convolutional parent this leaves almost nothing to randomize, moving
+          only about 2% of edges. Kept because it documents the constraint, not
+          because it makes a useful null.
+        * `mode="filter_symmetry"` keeps locality and randomizes substantially,
+          by giving up exact in-degree. Rather than rewiring cells, it maps each
+          cell-type pair's whole offset filter by a random lattice symmetry, so
+          every edge keeps its ring distance and its source keeps its out-degree,
+          while the relative orientation of different pairs' filters -- the
+          substrate of direction selectivity -- is destroyed. In-degree is only
+          approximately preserved, because a rotated filter clips differently
+          against the finite array near its boundary.
+
+        Edges at ring 0 -- a cell contacting its own column, 22% of this
+        connectome -- cannot move under any of these, since their ring contains a
+        single offset.
+
+    Info:
+        Blocks in which either side has a single cell cannot be rewired, because
+        every permutation of their targets gives the same edge set. Their edges
+        are left as they are.
+
+    Args:
+        parent: Config of the connectome to rewire, including its `type`.
+        seed: Seed of the random generator. Different seeds give independent
+            rewirings of the same parent. The seed is part of the config, so a
+            rewired connectome is reproducible from its config alone.
+        mode: `"filter_symmetry"`, `"within_ring"` or `"unconstrained"`. See the
+            warning above; the three trade locality, degree exactness and how much
+            they actually randomize against each other. Defaults to
+            `"unconstrained"` only so that configs stored before this argument
+            existed still rebuild the connectome they were trained on -- for a new
+            ensemble, set it explicitly.
+        swaps_per_edge: Attempted double-edge swaps per edge. Each sweep proposes
+            one swap per two edges, so the number of sweeps is
+            `2 * swaps_per_edge`.
+        preserve: Edge columns whose blocks swaps may not cross. With
+            `mode="within_ring"` the ring distance is added to these implicitly.
+        extent: The array radius in columns, as in the parent. Kept in this
+            config because consumers such as decoders read
+            `connectome.config.extent`. Defaults to the parent's extent and is
+            checked against it.
+
+    Attributes:
+        Same as `ConnectomeFromAvgFilters`, with `edges` rewired.
+    """
+
+    def __init__(
+        self,
+        parent: Dict[str, Any] = None,
+        seed: int = 0,
+        mode: str = "unconstrained",
+        swaps_per_edge: int = 20,
+        preserve: List[str] = None,
+        extent: Optional[int] = None,
+    ) -> None:
+        modes = ("filter_symmetry", "within_ring", "unconstrained")
+        if mode not in modes:
+            raise ValueError(f"mode must be one of {modes}, not {mode!r}")
+        parent_connectome = init_connectome(**dict(parent))
+        preserve = list(preserve) if preserve else ["source_type", "target_type"]
+
+        parent_extent = parent_connectome.config.get("extent", None)
+        if extent is not None and parent_extent is not None and extent != parent_extent:
+            raise ValueError(
+                f"extent {extent} does not match the parent's extent {parent_extent}"
+            )
+
+        nodes_type = parent_connectome.nodes.type[:]
+        nodes_u = parent_connectome.nodes.u[:]
+        nodes_v = parent_connectome.nodes.v[:]
+        n_nodes = len(nodes_type)
+
+        edges = {key: parent_connectome.edges[key][:] for key in parent_connectome.edges}
+        source_index = edges["source_index"]
+        target_index = edges["target_index"].copy()
+
+        # one integer label per block, so that blocks can be sliced by sorting.
+        # keeping locality means never mixing edges of different ring distance,
+        # so the ring becomes part of the block key.
+        block_columns = DataFrame({key: byte_to_str(edges[key]) for key in preserve})
+        ring = hex_ring_distance(edges["du"], edges["dv"])
+        if mode == "within_ring":
+            block_columns["_ring"] = ring
+        block = (
+            block_columns.groupby(list(block_columns.columns), sort=False).ngroup().values
+        )
+
+        rng = np.random.default_rng(seed)
+        order = np.argsort(block, kind="stable")
+        bounds = np.searchsorted(block[order], np.arange(block.max() + 2))
+
+        # for filter_symmetry, targets are addressed by column, so index the nodes
+        # of each cell type by their coordinates
+        node_at_by_type: Dict[str, Dict[Tuple[int, int], int]] = {}
+        if mode == "filter_symmetry":
+            types = byte_to_str(nodes_type)
+            for i in range(n_nodes):
+                node_at_by_type.setdefault(types[i], {})[
+                    (int(nodes_u[i]), int(nodes_v[i]))
+                ] = i
+
+        for start, stop in zip(bounds[:-1], bounds[1:]):
+            rows = order[start:stop]
+            if rows.size == 0:
+                continue
+            if mode == "filter_symmetry":
+                target_type = byte_to_str(edges["target_type"][rows[0]])
+                target_index[rows], _, _ = rotate_filter_within_block(
+                    source_index[rows],
+                    target_index[rows],
+                    rng,
+                    nodes_u,
+                    nodes_v,
+                    node_at_by_type[target_type],
+                    n_nodes,
+                )
+                continue
+            rewired, _ = rewire_targets_within_block(
+                source_index[rows],
+                target_index[rows],
+                rng,
+                2 * swaps_per_edge,
+                n_nodes,
+                nodes_u=nodes_u,
+                nodes_v=nodes_v,
+                keep_ring=int(ring[rows[0]]) if mode == "within_ring" else None,
+            )
+            target_index[rows] = rewired
+
+        # everything that depends on the target is re-derived; n_syn, sign and the
+        # source columns travel with the edge
+        edges["target_index"] = target_index
+        edges["target_type"] = nodes_type[target_index]
+        edges["target_u"] = nodes_u[target_index]
+        edges["target_v"] = nodes_v[target_index]
+        edges["du"] = edges["target_u"] - edges["source_u"]
+        edges["dv"] = edges["target_v"] - edges["source_v"]
+
+        for key in [
+            "unique_cell_types",
+            "input_cell_types",
+            "intermediate_cell_types",
+            "output_cell_types",
+            "layout",
+            "central_cells_index",
+        ]:
+            setattr(self, key, parent_connectome[key][:])
+
+        self.nodes = {  # type: ignore
+            key: parent_connectome.nodes[key][:]
+            for key in parent_connectome.nodes.keys()
+            if key != "layer_index"
+        }
+        self.nodes.layer_index = {
+            key: parent_connectome.nodes.layer_index[key][:]
+            for key in parent_connectome.nodes.layer_index.keys()
+        }
+
+        self.edges = edges  # type: ignore
 
 
 # -- Node construction ---------------------------------------------------------
