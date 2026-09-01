@@ -130,8 +130,7 @@ def main():
         # did it learn anything at all relative to the first validation?
         if curve is not None and best is not None and best >= curve[0]:
             problems.append(
-                f"best validation {best:.1f} is no better than the first "
-                f"({curve[0]:.1f})"
+                f"best validation {best:.1f} is no better than the first ({curve[0]:.1f})"
             )
 
         curves[net_dir.name] = curve

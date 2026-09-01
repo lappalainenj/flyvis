@@ -33,20 +33,37 @@ from flyvis.utils.dataset_utils import IndexSampler
 T_PRE = 0.5
 
 
-def common_dataloader(reference_network):
-    """One dataset and one held-out split, taken from the reference network.
+def common_dataloader(reference_network, val_set="config"):
+    """One dataset and one held-out split, used for every network compared.
 
-    Both ensembles compared here were trained under the same regime, so the
-    reference's dataset config is the right common ground.
+    Which sequences are held out is not a detail here. The published models'
+    stored config has no `original_split` key, so it defaults to the fold split,
+    whereas ensembles trained here set `original_split=True`. Those two splits
+    share only 6 sequences: 10 of the original split's 16 validation sequences
+    are *training* data under the fold split, and 11 of the fold split's 17 are
+    training data under the original split. Evaluating on either one alone
+    therefore favours whichever ensemble did not train on it.
+
+    `intersection` is the only set held out under both, and so the only fair one
+    when the two ensembles were trained under different splits.
     """
     task_config = flyvis.NetworkView(reference_network).dir.config.task
     dataset = forward_subclass(MultiTaskDataset, task_config.dataset)
-    if task_config.get("original_split", False):
-        _, val_index = dataset.original_train_and_validation_indices()
+    _, original = dataset.original_train_and_validation_indices()
+    _, fold = dataset.get_random_data_split(
+        task_config.fold, task_config.n_folds, task_config.seed
+    )
+    original, fold = [int(i) for i in original], [int(i) for i in fold]
+    if val_set == "original":
+        val_index = original
+    elif val_set == "fold":
+        val_index = fold
+    elif val_set == "intersection":
+        val_index = sorted(set(original) & set(fold))
+    elif val_set == "config":
+        val_index = original if task_config.get("original_split", False) else fold
     else:
-        _, val_index = dataset.get_random_data_split(
-            task_config.fold, task_config.n_folds, task_config.seed
-        )
+        raise ValueError(f"unknown val_set {val_set!r}")
     loader = DataLoader(dataset, batch_size=1, sampler=IndexSampler(val_index))
     return loader, dataset.dt, val_index
 
@@ -110,9 +127,44 @@ def zero_baseline(dataloader):
     }
 
 
-def networks_of(ensemble, limit=None):
+def networks_of(ensemble, limit=None, min_iterations=None):
+    """Members of an ensemble, optionally only those that finished training.
+
+    An ensemble still training has members with partial checkpoints; including
+    them would silently mix half-trained networks into the statistics.
+
+    The filter only applies where training records exist. The published models
+    ship no `loss.h5` at all -- only the best checkpoint -- so for them the
+    absence of a training record means "not recorded", not "not finished", and
+    excluding them would silently drop the entire comparison group.
+    """
     root = Path(flyvis.results_dir) / ensemble
     nets = sorted(d.name for d in root.iterdir() if d.name.isdigit())
+    if min_iterations:
+        import h5py
+
+        recorded = [n for n in nets if (root / n / "loss.h5").exists()]
+        if not recorded:
+            print(
+                f"  {ensemble}: no training records, keeping all {len(nets)} "
+                f"member(s) (published models ship only the best checkpoint)"
+            )
+            return nets[:limit] if limit else nets
+
+        complete = []
+        for name in nets:
+            loss = root / name / "loss.h5"
+            if not loss.exists():
+                # mixed ensemble: a member with no record cannot be verified
+                print(f"  {ensemble}/{name}: no training record, skipping")
+                continue
+            with h5py.File(loss, "r") as h:
+                if np.atleast_1d(h["data"][()]).size >= min_iterations:
+                    complete.append(name)
+        skipped = len(nets) - len(complete)
+        if skipped:
+            print(f"  {ensemble}: skipping {skipped} member(s) still training")
+        nets = complete
     return nets[:limit] if limit else nets
 
 
@@ -125,17 +177,40 @@ def main():
         help="network whose task config defines the common dataset and split; "
         "defaults to the first network of the first ensemble",
     )
+    p.add_argument(
+        "--val-set",
+        default="config",
+        choices=["config", "original", "fold", "intersection"],
+        help="which sequences to hold out; `intersection` is the only set held "
+        "out under both the original and the fold split",
+    )
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument(
+        "--min-iterations",
+        type=int,
+        default=None,
+        help="only evaluate members whose training reached this many "
+        "iterations, so a partly finished ensemble is not mixed in",
+    )
     p.add_argument("--out", default=None)
     args = p.parse_args()
 
-    first = f"{args.ensembles[0]}/{networks_of(args.ensembles[0])[0]}"
+    complete = networks_of(args.ensembles[0], min_iterations=args.min_iterations)
+    first = f"{args.ensembles[0]}/{complete[0]}"
     protocol_from = args.protocol_from or first
-    loader, dt, val_index = common_dataloader(protocol_from)
-    print(f"protocol from {protocol_from}: {len(val_index)} held-out sequences, dt={dt}")
+    loader, dt, val_index = common_dataloader(protocol_from, args.val_set)
+    print(
+        f"protocol from {protocol_from}: val_set={args.val_set}, "
+        f"{len(val_index)} sequences, dt={dt}"
+    )
     print(f"validation indices: {list(val_index)}\n")
 
-    results = {"protocol_from": protocol_from, "n_val_sequences": len(val_index)}
+    results = {
+        "protocol_from": protocol_from,
+        "val_set": args.val_set,
+        "n_val_sequences": len(val_index),
+        "val_indices": list(val_index),
+    }
 
     base = zero_baseline(loader)
     print(
@@ -149,7 +224,7 @@ def main():
     results["zero"] = base
 
     for ensemble in args.ensembles:
-        for name in networks_of(ensemble, args.limit):
+        for name in networks_of(ensemble, args.limit, args.min_iterations):
             full = f"{ensemble}/{name}"
             view = flyvis.NetworkView(full)
             net, dec = view.init_network(), view.init_decoder()
@@ -162,7 +237,7 @@ def main():
             )
 
     # -- untrained reference from the first ensemble ------------------------
-    name = networks_of(args.ensembles[0])[0]
+    name = complete[0]
     full = f"{args.ensembles[0]}/{name}"
     view = flyvis.NetworkView(full)
     chkpt0 = sorted((Path(view.dir.path) / "chkpts").glob("chkpt_*"))[0]

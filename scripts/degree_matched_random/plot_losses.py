@@ -24,7 +24,9 @@ def has_curves(ensemble):
     if not nets:
         return False, "no networks"
     if not (nets[0] / "loss.h5").exists():
-        return False, "no training loss file (published models ship only the best checkpoint)"
+        return False, (
+            "no training loss file (published models ship only the best checkpoint)"
+        )
     return True, f"{len(nets)} networks"
 
 
@@ -79,9 +81,11 @@ def main():
         plt.close(fig)
 
         val = view.validation_losses()
-        print(f"  validation: first {val[:, 0].mean():.2f}, "
-              f"best {val.min(axis=1).mean():.2f} +- {val.min(axis=1).std():.2f} "
-              f"(n={len(val)})")
+        print(
+            f"  validation: first {val[:, 0].mean():.2f}, "
+            f"best {val.min(axis=1).mean():.2f} +- {val.min(axis=1).std():.2f} "
+            f"(n={len(val)})"
+        )
         print(f"  wrote 3 figures to {out}/{tag}_*")
 
 

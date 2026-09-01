@@ -38,6 +38,7 @@ from flyvis.utils.type_utils import byte_to_str
 
 __all__ = [
     "ConnectomeFromAvgFilters",
+    "ConnectomeFromTables",
     "ConnectomeWithPrunedEdges",
     "ConnectomeWithRewiredEdges",
     "hex_ring_distance",
@@ -274,6 +275,158 @@ class ConnectomeFromAvgFilters(Directory):
             node_indices = np.nonzero(self.nodes["type"][:] == cell_type)[0]
             layer_index[cell_type.decode()] = np.int64(node_indices)
         self.nodes.layer_index = layer_index
+
+
+@register_connectome
+@root(flyvis.root_dir / "connectome")
+class ConnectomeFromTables(Directory):
+    """A connectome read from stored node and edge tables.
+
+    For connectomes built outside flyvis -- a hybrid of the average-filter
+    template with measured EM connectivity, say -- that should nonetheless train
+    and reload through flyvis alone. Everything the network needs is derived from
+    the two tables, so a model trained on such a connectome rehydrates from its
+    own config without the tool that produced it.
+
+    Args:
+        path: Directory holding `nodes.parquet` and `edges.parquet`. Relative
+            paths resolve against `flyvis.root_dir`.
+        extent: The array radius in columns. Kept in this config because
+            consumers such as decoders read `connectome.config.extent`.
+        sha256: Optional checksum over both tables. Recommended: it makes the
+            stored config identify the tables themselves rather than only the
+            directory they happened to live in.
+
+    Required columns:
+        nodes: `index`, `type`, `u`, `v`, `role`, where `role` is one of
+            `input`, `intermediate`, `output`.
+        edges: `source_index`, `target_index`, `source_type`, `target_type`,
+            `source_u`, `source_v`, `target_u`, `target_v`, `du`, `dv`,
+            `n_syn`, `sign`. `n_syn_certainty` is carried through if present.
+
+    Attributes:
+        Same as `ConnectomeFromAvgFilters`.
+    """
+
+    NODE_COLUMNS = ("index", "type", "u", "v", "role")
+    EDGE_COLUMNS = (
+        "source_index",
+        "target_index",
+        "source_type",
+        "target_type",
+        "source_u",
+        "source_v",
+        "target_u",
+        "target_v",
+        "du",
+        "dv",
+        "n_syn",
+        "sign",
+    )
+
+    def __init__(
+        self, path: str = "", extent: int = 15, sha256: str = ""
+    ) -> None:
+        import hashlib
+
+        import pandas as pd
+
+        directory = Path(path)
+        if not directory.is_absolute():
+            directory = flyvis.root_dir / path
+        node_file, edge_file = (
+            directory / "nodes.parquet",
+            directory / "edges.parquet",
+        )
+        for f in (node_file, edge_file):
+            if not f.exists():
+                raise FileNotFoundError(f"{f} not found")
+
+        if sha256:
+            digest = hashlib.sha256()
+            for f in (node_file, edge_file):
+                digest.update(f.read_bytes())
+            if digest.hexdigest() != sha256:
+                raise ValueError(
+                    f"table checksum mismatch: {digest.hexdigest()} != {sha256}"
+                )
+
+        nodes = pd.read_parquet(node_file)
+        edges = pd.read_parquet(edge_file)
+        for name, table, required in [
+            ("nodes", nodes, self.NODE_COLUMNS),
+            ("edges", edges, self.EDGE_COLUMNS),
+        ]:
+            missing = set(required) - set(table.columns)
+            if missing:
+                raise ValueError(f"{name} table is missing columns {sorted(missing)}")
+
+        nodes = nodes.sort_values("index").reset_index(drop=True)
+        if not np.array_equal(nodes["index"].values, np.arange(len(nodes))):
+            raise ValueError("node index must be 0..n_nodes-1 without gaps")
+
+        # -- cell type inventory, ordered as the node table presents it --------
+        types = nodes["type"].astype(str).values
+        roles = nodes["role"].astype(str).values
+        unique_types = list(dict.fromkeys(types))
+        by_role = {
+            role: [t for t in unique_types if roles[types == t][0] == role]
+            for role in ("input", "intermediate", "output")
+        }
+        self.unique_cell_types = np.bytes_(unique_types)
+        self.input_cell_types = np.bytes_(by_role["input"])
+        self.intermediate_cell_types = np.bytes_(by_role["intermediate"])
+        self.output_cell_types = np.bytes_(by_role["output"])
+        # `retina` rather than `input`, to match ConnectomeFromAvgFilters
+        self.layout = np.bytes_([
+            *[(t, "retina") for t in by_role["input"]],
+            *[(t, "intermediate") for t in by_role["intermediate"]],
+            *[(t, "output") for t in by_role["output"]],
+        ])
+
+        central = []
+        for cell_type in unique_types:
+            is_type = types == cell_type
+            at_centre = is_type & (nodes["u"].values == 0) & (nodes["v"].values == 0)
+            if not at_centre.any():
+                raise ValueError(f"no central (u=0, v=0) cell for type {cell_type}")
+            central.append(int(np.nonzero(at_centre)[0][0]))
+        self.central_cells_index = np.array(central, dtype=np.int64)
+
+        # np.bytes_ on an ndarray collapses it to a single scalar, so byte-string
+        # columns are built with astype("S") instead
+        self.nodes = {  # type: ignore
+            "index": nodes["index"].values.astype(np.int64),
+            "type": types.astype("S"),
+            "u": nodes["u"].values.astype(np.int32),
+            "v": nodes["v"].values.astype(np.int32),
+            "role": roles.astype("S"),
+        }
+        self.nodes.layer_index = {
+            cell_type: np.nonzero(types == cell_type)[0].astype(np.int64)
+            for cell_type in unique_types
+        }
+
+        stored = {
+            "source_index": np.int64,
+            "target_index": np.int64,
+            "source_u": np.int32,
+            "source_v": np.int32,
+            "target_u": np.int32,
+            "target_v": np.int32,
+            "du": np.int32,
+            "dv": np.int32,
+            "n_syn": np.float32,
+            "sign": np.float32,
+        }
+        edge_arrays = {k: edges[k].values.astype(t) for k, t in stored.items()}
+        edge_arrays["source_type"] = edges["source_type"].astype(str).values.astype("S")
+        edge_arrays["target_type"] = edges["target_type"].astype(str).values.astype("S")
+        if "n_syn_certainty" in edges.columns:
+            edge_arrays["n_syn_certainty"] = edges["n_syn_certainty"].values.astype(
+                np.float32
+            )
+        self.edges = edge_arrays  # type: ignore
 
 
 @register_connectome

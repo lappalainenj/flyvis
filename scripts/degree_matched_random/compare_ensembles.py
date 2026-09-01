@@ -19,6 +19,7 @@ Example:
 
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 from scipy import stats
@@ -57,10 +58,14 @@ def tost(x, y, margin):
 
 def report(name, x, y, margin, label_a, label_b):
     print(f"\n== {name} ==")
-    print(f"  {label_a} (n={len(x)}): mean {x.mean():.4f}  sd {x.std(ddof=1):.4f}  "
-          f"min {x.min():.4f}  max {x.max():.4f}")
-    print(f"  {label_b} (n={len(y)}): mean {y.mean():.4f}  sd {y.std(ddof=1):.4f}  "
-          f"min {y.min():.4f}  max {y.max():.4f}")
+    print(
+        f"  {label_a} (n={len(x)}): mean {x.mean():.4f}  sd {x.std(ddof=1):.4f}  "
+        f"min {x.min():.4f}  max {x.max():.4f}"
+    )
+    print(
+        f"  {label_b} (n={len(y)}): mean {y.mean():.4f}  sd {y.std(ddof=1):.4f}  "
+        f"min {y.min():.4f}  max {y.max():.4f}"
+    )
     t, p = stats.ttest_ind(x, y, equal_var=False)
     _, pu = stats.mannwhitneyu(x, y, alternative="two-sided")
     print(f"  difference test : Welch t={t:.2f} p={p:.4f} | Mann-Whitney p={pu:.4f}")
@@ -69,9 +74,11 @@ def report(name, x, y, margin, label_a, label_b):
         return {"welch_p": float(p), "mwu_p": float(pu)}
     eq = tost(x, y, margin)
     verdict = "EQUIVALENT" if eq["equivalent"] else "NOT SHOWN EQUIVALENT"
-    print(f"  equivalence test: diff {eq['diff']:+.4f} +- {eq['se']:.4f}, "
-          f"90% CI [{eq['ci90'][0]:+.4f}, {eq['ci90'][1]:+.4f}], "
-          f"margin +-{margin:g}")
+    print(
+        f"  equivalence test: diff {eq['diff']:+.4f} +- {eq['se']:.4f}, "
+        f"90% CI [{eq['ci90'][0]:+.4f}, {eq['ci90'][1]:+.4f}], "
+        f"margin +-{margin:g}"
+    )
     print(f"                    TOST p={eq['p_tost']:.4f}  -> {verdict}")
     return {"welch_p": float(p), "mwu_p": float(pu), **eq}
 
@@ -92,7 +99,7 @@ def main():
     p.add_argument("--out", default=None)
     args = p.parse_args()
 
-    results = json.loads(open(args.results).read())
+    results = json.loads(Path(args.results).read_text())
     A, B = members(results, args.a), members(results, args.b)
     if not A or not B:
         raise SystemExit(f"missing members: {args.a}={len(A)}, {args.b}={len(B)}")
@@ -106,19 +113,22 @@ def main():
     for metric in ["corr_pred_gt", "max_abs_activity"]:
         x = np.array([v[metric] for v in A.values()])
         y = np.array([v[metric] for v in B.values()])
-        print(f"\n  {metric}: {args.a} {np.nanmean(x):.3f} vs {args.b} "
-              f"{np.nanmean(y):.3f}")
+        print(
+            f"\n  {metric}: {args.a} {np.nanmean(x):.3f} vs {args.b} {np.nanmean(y):.3f}"
+        )
 
     if "zero" in results:
         z = results["zero"]
         xa = np.array([v["epe"] for v in A.values()]).mean()
         xb = np.array([v["epe"] for v in B.values()]).mean()
-        print(f"\n  EPE gain over zero prediction ({z['epe']:.4f}): "
-              f"{args.a} {z['epe'] - xa:.4f}, {args.b} {z['epe'] - xb:.4f} "
-              f"-> ratio {(z['epe'] - xa) / (z['epe'] - xb):.3f}")
+        print(
+            f"\n  EPE gain over zero prediction ({z['epe']:.4f}): "
+            f"{args.a} {z['epe'] - xa:.4f}, {args.b} {z['epe'] - xb:.4f} "
+            f"-> ratio {(z['epe'] - xa) / (z['epe'] - xb):.3f}"
+        )
 
     if args.out:
-        open(args.out, "w").write(json.dumps(out, indent=2))
+        Path(args.out).write_text(json.dumps(out, indent=2))
         print(f"\nwrote {args.out}")
 
 
